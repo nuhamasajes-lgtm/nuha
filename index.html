@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-<title>Nahu · Turnos</title>
+<title>Nuha · Turnos</title>
 <link rel="manifest" href="manifest.json" />
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
 <link rel="apple-touch-icon" href="icon-192.png" />
 <meta name="theme-color" content="#26301F" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-<meta name="apple-mobile-web-app-title" content="Nahu" />
+<meta name="apple-mobile-web-app-title" content="Nuha" />
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
@@ -62,6 +62,9 @@ const { useState, useEffect, useMemo, useCallback } = React;
 
 /* ======= CONFIGURÁ ACÁ TU URL DE APPS SCRIPT ======= */
 const API_URL = "https://script.google.com/macros/s/AKfycbz8VOUaaBkaPMdvmuPYsAYyiRhaha7nUeH0I6kk7P671BWejcyLii0LJ7Ap37Reu6x6/exec";
+/* URL aparte, de una hoja de cálculo distinta, solo para ubicación de dispositivos.
+   Pegá acá la URL /exec que te dé el nuevo deploy (ver instrucciones). */
+const LOCATION_API_URL = "PEGA_ACA_LA_URL_DE_UBICACIONES";
 /* ==================================================== */
 
 const ESPECIALES = [
@@ -109,6 +112,41 @@ async function apiPost(body) {
   return res.json();
 }
 
+function getDeviceId() {
+  let id = localStorage.getItem("nuha:deviceId");
+  if (!id) { id = "dev_" + Math.random().toString(36).slice(2) + Date.now(); localStorage.setItem("nuha:deviceId", id); }
+  return id;
+}
+function getDeviceName() {
+  let nombre = localStorage.getItem("nuha:deviceName");
+  if (!nombre) {
+    nombre = window.prompt("¿Cómo se llama este dispositivo? (ej: Tablet mostrador)", "Tablet");
+    if (!nombre) nombre = "Sin nombre";
+    localStorage.setItem("nuha:deviceName", nombre);
+  }
+  return nombre;
+}
+function reportarUbicacion() {
+  if (!navigator.geolocation) return;
+  if (!LOCATION_API_URL || LOCATION_API_URL.indexOf("PEGA_ACA") === 0) return;
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      fetch(LOCATION_API_URL, {
+        method: "POST",
+        body: JSON.stringify({
+          action: "actualizarUbicacion",
+          deviceId: getDeviceId(),
+          nombre: getDeviceName(),
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+        }),
+      }).catch(() => {});
+    },
+    () => {},
+    { enableHighAccuracy: false, maximumAge: 5 * 60 * 1000 }
+  );
+}
+
 function App() {
   const [view, setView] = useState("home");
   const [precios, setPrecios] = useState([]);
@@ -133,6 +171,11 @@ function App() {
   }, []);
 
   useEffect(() => { cargarDatos().catch(() => {}); }, [cargarDatos]);
+  useEffect(() => {
+    reportarUbicacion();
+    const t = setInterval(reportarUbicacion, 15 * 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
 
   // Guarda un cambio. Si el POST falla, en vez de reintentarlo a ciegas (lo que
   // puede duplicar el dato), primero relee la hoja y se fija si el cambio ya
@@ -193,8 +236,8 @@ function App() {
                 "cancelarTurno", { id },
                 (data) => (data.turnos || []).some(t => t.id === id && t.estado === "cancelado")
               )}
-              onFinalizar={(id, propina) => runAction(
-                "finalizarTurno", { id, propina },
+              onFinalizar={(id, propina, metodoPago) => runAction(
+                "finalizarTurno", { id, propina, metodoPago },
                 (data) => (data.turnos || []).some(t => t.id === id && t.estado === "finalizado")
               )} />
           )}
@@ -224,7 +267,7 @@ function Shell({ children, view, onNavigate, syncing, syncLabel, onRefresh }) {
         <aside className="app-sidebar">
           <div className="brand-block">
             <p style={styles.brandEyebrow}>Estudio</p>
-            <h1 style={styles.brandTitle}>Nahu</h1>
+            <h1 style={styles.brandTitle}>Nuha</h1>
           </div>
           <nav>
             {NAV.map(({ key, icon, label }) => (
@@ -342,7 +385,7 @@ function Agendar({ precios, turnos, onConfirm }) {
           <button disabled={!puedeConfirmar} onClick={confirmar} style={{ ...styles.primaryBtn, opacity: puedeConfirmar ? 1 : 0.4, marginTop: 18 }}>
             {enviando ? "Guardando…" : "Confirmar turno"}
           </button>
-          <p style={styles.helperNote}>El turno se guarda directo en tu hoja de cálculo "nahu negocio".</p>
+          <p style={styles.helperNote}>El turno se guarda directo en tu hoja de cálculo "nuha negocio".</p>
         </div>
       </div>
     </div>
@@ -354,11 +397,12 @@ function Turnos({ precios, turnos, onCancelar, onFinalizar }) {
   const [finalizando, setFinalizando] = useState(null);
   const [propinaInput, setPropinaInput] = useState("");
   const [huboPropina, setHuboPropina] = useState(null);
+  const [metodoPago, setMetodoPago] = useState(null);
   const [procesando, setProcesando] = useState(null); // { id, accion: 'cancelar' | 'finalizar' }
 
   const filtrados = turnos.filter(t => t.estado === tab).sort((a, b) => (a.fecha + a.hora).localeCompare(b.fecha + b.hora));
 
-  function abrirFinalizar(id) { setFinalizando(id); setHuboPropina(null); setPropinaInput(""); }
+  function abrirFinalizar(id) { setFinalizando(id); setHuboPropina(null); setPropinaInput(""); setMetodoPago(null); }
 
   function cancelar(id) {
     setProcesando({ id, accion: "cancelar" });
@@ -369,7 +413,7 @@ function Turnos({ precios, turnos, onCancelar, onFinalizar }) {
     const propina = huboPropina ? Number(propinaInput || 0) : 0;
     setFinalizando(null);
     setProcesando({ id, accion: "finalizar" });
-    Promise.resolve(onFinalizar(id, propina)).finally(() => setProcesando(null));
+    Promise.resolve(onFinalizar(id, propina, metodoPago)).finally(() => setProcesando(null));
   }
 
   return (
@@ -397,6 +441,7 @@ function Turnos({ precios, turnos, onCancelar, onFinalizar }) {
               </div>
               <div style={styles.turnoMeta}>
                 {formatFechaLarga(t.fecha)} · {t.hora}
+                {t.estado === "finalizado" && t.metodoPago && <span> · {t.metodoPago}</span>}
                 {t.estado === "finalizado" && t.propina > 0 && <span> · propina {money(t.propina)}</span>}
                 {t.estado === "finalizado" && !t.propina && <span> · sin propina</span>}
               </div>
@@ -408,6 +453,11 @@ function Turnos({ precios, turnos, onCancelar, onFinalizar }) {
               )}
               {enFinalizacion && !enProceso && (
                 <div style={styles.finalizePanel}>
+                  <p style={styles.sectionLabel}>¿Cómo pagó?</p>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                    <button onClick={() => setMetodoPago("Efectivo")} style={{ ...styles.smallToggle, ...(metodoPago === "Efectivo" ? styles.smallToggleActive : {}) }}>💵 Efectivo</button>
+                    <button onClick={() => setMetodoPago("Transferencia")} style={{ ...styles.smallToggle, ...(metodoPago === "Transferencia" ? styles.smallToggleActive : {}) }}>🏦 Transferencia</button>
+                  </div>
                   <p style={styles.sectionLabel}>¿Dejó propina?</p>
                   <div style={{ display: "flex", gap: 8 }}>
                     <button onClick={() => setHuboPropina(true)} style={{ ...styles.smallToggle, ...(huboPropina === true ? styles.smallToggleActive : {}) }}>Sí</button>
@@ -417,8 +467,8 @@ function Turnos({ precios, turnos, onCancelar, onFinalizar }) {
                     <input type="number" inputMode="numeric" placeholder="Monto de la propina" value={propinaInput}
                       onChange={(e) => setPropinaInput(e.target.value)} style={styles.input} />
                   )}
-                  <button disabled={huboPropina === null} onClick={() => confirmarFinalizar(t.id)}
-                    style={{ ...styles.primaryBtn, marginTop: 10, opacity: huboPropina === null ? 0.4 : 1 }}>Guardar</button>
+                  <button disabled={huboPropina === null || metodoPago === null} onClick={() => confirmarFinalizar(t.id)}
+                    style={{ ...styles.primaryBtn, marginTop: 10, opacity: (huboPropina === null || metodoPago === null) ? 0.4 : 1 }}>Guardar</button>
                 </div>
               )}
               {enProceso && (
